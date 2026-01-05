@@ -34,8 +34,21 @@ const DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/145647308366466
 
 // --- 工具函數 ---
 const formatDate = (timestamp) => {
-  if (!timestamp) return '無';
+  if (!timestamp) return '尚未啟用';
   return new Date(timestamp.seconds * 1000).toLocaleString('zh-TW');
+};
+
+const formatDuration = (seconds) => {
+  if (!seconds) return '0分';
+  const d = Math.floor(seconds / (24 * 3600));
+  const h = Math.floor((seconds % (24 * 3600)) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  
+  let str = '';
+  if (d > 0) str += `${d}天 `;
+  if (h > 0) str += `${h}時 `;
+  if (m > 0) str += `${m}分`;
+  return str.trim() || '0分';
 };
 
 const copyToClipboard = (text) => {
@@ -241,7 +254,6 @@ function LoginPage({ setUser, setLoading, loading }) {
           <button 
             type="submit" 
             disabled={loading}
-            // 修正: 將 bg-gradient-to-r 更新為 bg-linear-to-r 以符合 Tailwind v4 標準
             className="w-full bg-linear-to-r from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 text-white font-bold py-3 px-4 rounded-lg transition-all transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
           >
             {loading ? '驗證中...' : '登入系統'}
@@ -327,7 +339,7 @@ function EngineerDashboard({ user }) {
   );
 }
 
-// --- 工程師階層視圖 (包含刪除帳號功能) ---
+// --- 工程師階層視圖 ---
 function EngineerHierarchy() {
   const [users, setUsers] = useState([]);
   const [codes, setCodes] = useState([]);
@@ -565,30 +577,34 @@ function TeacherDashboard({ user, setUser }) {
 
 // --- 通用組件: 驗證碼生成器 ---
 function CodeGenerator({ user, targetRole, title }) {
-  const [duration, setDuration] = useState(30); 
+  // 修改: 拆分為 天/時/分
+  const [days, setDays] = useState(30); 
+  const [hours, setHours] = useState(0); 
+  const [minutes, setMinutes] = useState(0); 
   const [loading, setLoading] = useState(false);
 
   const generateCode = async () => {
     setLoading(true);
     try {
       const code = Math.random().toString(36).substring(2, 10).toUpperCase();
-      const now = new Date();
-      const expiresAt = new Date();
-      expiresAt.setDate(now.getDate() + parseInt(duration));
+      
+      // 計算總秒數
+      const totalSeconds = (parseInt(days) * 24 * 3600) + (parseInt(hours) * 3600) + (parseInt(minutes) * 60);
 
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION), {
         code: code,
         type: targetRole,
         createdByUid: user.uid,
         createdAt: serverTimestamp(),
-        expiresAt: Timestamp.fromDate(expiresAt),
+        // 修改: 預設為 null，代表尚未啟用 (Start on use)
+        expiresAt: null, 
+        durationSeconds: totalSeconds,
         isUsed: false,
         boundMac: '',
         usedByUid: '',
-        durationDays: parseInt(duration)
       });
       
-      sendToDiscord(`[Web後台] ${user.role === 'teacher' ? '教師' : '業務'} ${user.realName || user.username} 建立了 ${targetRole === 'student' ? '學生' : '教師'} 驗證碼: ${code}`);
+      sendToDiscord(`[Web後台] ${user.role === 'teacher' ? '教師' : '業務'} ${user.realName || user.username} 建立了 ${targetRole === 'student' ? '學生' : '教師'} 驗證碼: ${code} (時效: ${formatDuration(totalSeconds)})`);
       setLoading(false);
     } catch (err) {
       alert('生成錯誤: ' + err.message);
@@ -597,21 +613,37 @@ function CodeGenerator({ user, targetRole, title }) {
   };
 
   return (
-    <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700 flex items-end gap-4">
-      <div className="flex-1">
-        <h3 className="text-lg font-bold text-white mb-2">{title}</h3>
-        <label className="block text-sm text-gray-400 mb-1">授權時間 (天)</label>
-        <input 
-          type="number" 
-          value={duration}
-          onChange={(e) => setDuration(e.target.value)}
-          className="bg-gray-700 border border-gray-600 rounded p-2 text-white w-full"
-        />
+    <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700 flex flex-col md:flex-row md:items-end gap-4">
+      <div className="flex-1 space-y-3">
+        <h3 className="text-lg font-bold text-white">{title}</h3>
+        <div className="flex gap-2">
+          <div className="flex-1">
+            <label className="block text-xs text-gray-400 mb-1">天</label>
+            <input 
+              type="number" min="0" value={days} onChange={(e) => setDays(e.target.value)}
+              className="bg-gray-700 border border-gray-600 rounded p-2 text-white w-full"
+            />
+          </div>
+          <div className="flex-1">
+            <label className="block text-xs text-gray-400 mb-1">時</label>
+            <input 
+              type="number" min="0" max="23" value={hours} onChange={(e) => setHours(e.target.value)}
+              className="bg-gray-700 border border-gray-600 rounded p-2 text-white w-full"
+            />
+          </div>
+          <div className="flex-1">
+            <label className="block text-xs text-gray-400 mb-1">分</label>
+            <input 
+              type="number" min="0" max="59" value={minutes} onChange={(e) => setMinutes(e.target.value)}
+              className="bg-gray-700 border border-gray-600 rounded p-2 text-white w-full"
+            />
+          </div>
+        </div>
       </div>
       <button 
         onClick={generateCode} 
         disabled={loading}
-        className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-6 rounded h-10 mb-0.5 disabled:opacity-50"
+        className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-6 rounded h-10 disabled:opacity-50 w-full md:w-auto"
       >
         {loading ? '生成中...' : '建立驗證碼'}
       </button>
@@ -645,16 +677,27 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
     return () => unsubscribe();
   }, [currentUid, isEngineer]);
 
-  const extendTime = async (codeId, currentExpire) => {
+  // 修改: 智慧延長時間 (啟用前加時長 / 啟用後延日期)
+  const extendTime = async (codeId, currentExpire, currentDuration) => {
     const days = prompt('延長多少天?', '30');
     if (!days) return;
-    
-    const oldDate = new Date(currentExpire.seconds * 1000);
-    oldDate.setDate(oldDate.getDate() + parseInt(days));
-    
-    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION, codeId), {
-      expiresAt: Timestamp.fromDate(oldDate)
-    });
+    const addSeconds = parseInt(days) * 24 * 3600;
+
+    if (!currentExpire) {
+      // 尚未啟用：增加 durationSeconds
+      const newDuration = (currentDuration || 0) + addSeconds;
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION, codeId), {
+        durationSeconds: newDuration
+      });
+      alert(`已增加授權時長，目前總時長: ${formatDuration(newDuration)}`);
+    } else {
+      // 已啟用：延後 expiresAt
+      const oldDate = new Date(currentExpire.seconds * 1000);
+      oldDate.setDate(oldDate.getDate() + parseInt(days));
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION, codeId), {
+        expiresAt: Timestamp.fromDate(oldDate)
+      });
+    }
   };
 
   const deleteCode = async (code, codeId, usedByUid) => {
@@ -701,8 +744,28 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
   return (
     <div className="grid grid-cols-1 gap-4">
       {codes.map(item => {
-        const isExpired = item.expiresAt?.seconds * 1000 < Date.now();
-        const borderColor = isExpired ? 'border-red-500' : (item.isUsed ? 'border-green-500' : 'border-gray-500');
+        // 修改: 判斷過期邏輯 (未啟用不算過期)
+        const isExpired = item.expiresAt ? (item.expiresAt.seconds * 1000 < Date.now()) : false;
+        const isActive = item.isUsed && item.expiresAt;
+        
+        let statusColor = 'bg-gray-600';
+        let statusText = '尚未啟用';
+        let borderColor = 'border-gray-500';
+
+        if (isExpired) {
+            statusColor = 'bg-red-600';
+            statusText = '已到期';
+            borderColor = 'border-red-500';
+        } else if (isActive) {
+            statusColor = 'bg-green-600';
+            statusText = '使用中';
+            borderColor = 'border-green-500';
+        }
+
+        // 相容舊資料 (若沒有 durationSeconds，預設用 days)
+        const displayDuration = item.durationSeconds 
+            ? formatDuration(item.durationSeconds) 
+            : `${item.durationDays || 30}天`;
 
         return (
           <div key={item.id} className={`relative bg-gray-800 border-2 ${borderColor} rounded-lg p-4 transition-all hover:shadow-lg`}>
@@ -726,8 +789,8 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
                     )}
                   </button>
 
-                  <span className={`text-xs px-2 py-0.5 rounded ${isExpired ? 'bg-red-600' : (item.isUsed ? 'bg-green-600' : 'bg-gray-600')}`}>
-                    {isExpired ? '已到期' : (item.isUsed ? '已啟用' : '未啟用')}
+                  <span className={`text-xs px-2 py-0.5 rounded ${statusColor}`}>
+                    {statusText}
                   </span>
                 </div>
                 
@@ -742,7 +805,12 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
                   </div>
                   <div>
                     <span className="block text-xs text-gray-500">到期日期</span>
-                    <span className={isExpired ? 'text-red-400 font-bold' : ''}>{formatDate(item.expiresAt)}</span>
+                    {/* 修改: 若未啟用，顯示總時長 */}
+                    {item.expiresAt ? (
+                        <span className={isExpired ? 'text-red-400 font-bold' : ''}>{formatDate(item.expiresAt)}</span>
+                    ) : (
+                        <span className="text-gray-500 italic">未啟用 (時效: {displayDuration})</span>
+                    )}
                   </div>
 
                   {!showStudentDetail && item.type === 'teacher' && item.isUsed && (
@@ -760,7 +828,7 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
 
               <div className="flex flex-col justify-center gap-2 border-l border-gray-700 pl-4">
                 <button 
-                  onClick={() => extendTime(item.id, item.expiresAt)}
+                  onClick={() => extendTime(item.id, item.expiresAt, item.durationSeconds)}
                   className="flex items-center gap-1 bg-blue-600/80 hover:bg-blue-600 text-xs px-3 py-2 rounded text-white w-full justify-center"
                 >
                   <Clock className="w-3 h-3" /> 延長時間
