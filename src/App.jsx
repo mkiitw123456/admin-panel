@@ -241,7 +241,8 @@ function LoginPage({ setUser, setLoading, loading }) {
           <button 
             type="submit" 
             disabled={loading}
-            className="w-full bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 text-white font-bold py-3 px-4 rounded-lg transition-all transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+            // 修正: 將 bg-gradient-to-r 更新為 bg-linear-to-r 以符合 Tailwind v4 標準
+            className="w-full bg-linear-to-r from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 text-white font-bold py-3 px-4 rounded-lg transition-all transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
           >
             {loading ? '驗證中...' : '登入系統'}
           </button>
@@ -320,14 +321,13 @@ function EngineerDashboard({ user }) {
 
       <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
          <h3 className="text-xl font-bold mb-4 text-gray-300">所有驗證碼列表 (扁平視圖)</h3>
-         {/* 修正: 傳遞 currentUser */}
          <CodeList filterRole={null} currentUid={null} isEngineer={true} currentUser={user} />
       </div>
     </div>
   );
 }
 
-// --- 工程師階層視圖 ---
+// --- 工程師階層視圖 (包含刪除帳號功能) ---
 function EngineerHierarchy() {
   const [users, setUsers] = useState([]);
   const [codes, setCodes] = useState([]);
@@ -347,6 +347,18 @@ function EngineerHierarchy() {
     };
   }, []);
 
+  const handleDeleteUser = async (uid, name, role) => {
+    if (!confirm(`警告：您確定要刪除 ${role} "${name}" 的帳號嗎？\n\n此操作無法復原，且該帳號將無法再登入。`)) return;
+    
+    try {
+        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', USERS_COLLECTION, uid));
+        sendToDiscord(`[Web後台] 工程師已刪除 ${role} 帳號: ${name} (UID: ${uid})`);
+        alert('刪除成功');
+    } catch (e) {
+        alert('刪除失敗: ' + e.message);
+    }
+  };
+
   const salesPeople = users.filter(u => u.role === 'sales');
 
   return (
@@ -364,6 +376,13 @@ function EngineerHierarchy() {
                 <Briefcase className="w-5 h-5 text-yellow-500" />
                 <span className="font-bold text-lg text-yellow-400">{sale.realName || sale.username} (業務)</span>
                 <span className="text-xs text-gray-500 ml-2">UID: {sale.id}</span>
+                <button 
+                    onClick={() => handleDeleteUser(sale.id, sale.realName || sale.username, '業務')}
+                    className="ml-auto text-red-500 hover:text-red-400 p-1 hover:bg-gray-800 rounded"
+                    title="刪除業務帳號"
+                >
+                    <Trash2 className="w-4 h-4" />
+                </button>
               </div>
 
               {teacherCodes.length === 0 ? (
@@ -381,7 +400,16 @@ function EngineerHierarchy() {
                           <span className="text-gray-300 font-mono text-sm">{tCode.code}</span>
                           <span className="text-gray-500">→</span>
                           {teacher ? (
-                            <span className="font-bold text-green-400">{teacher.realName || teacher.username} (教師)</span>
+                            <>
+                                <span className="font-bold text-green-400">{teacher.realName || teacher.username} (教師)</span>
+                                <button 
+                                    onClick={() => handleDeleteUser(teacher.id, teacher.realName || teacher.username, '教師')}
+                                    className="ml-2 text-red-500 hover:text-red-400 p-1 hover:bg-gray-800 rounded"
+                                    title="刪除教師帳號"
+                                >
+                                    <Trash2 className="w-3 h-3" />
+                                </button>
+                            </>
                           ) : (
                             <span className="text-gray-500 italic">尚未綁定/使用</span>
                           )}
@@ -400,7 +428,16 @@ function EngineerHierarchy() {
                                      <span className="text-gray-400 font-mono">{sCode.code}</span>
                                      <span className="text-gray-600">→</span>
                                      {student ? (
-                                       <span className="text-blue-300">{student.realName} (學生)</span>
+                                       <>
+                                         <span className="text-blue-300">{student.realName} (學生)</span>
+                                         <button 
+                                            onClick={() => handleDeleteUser(student.id, student.realName || student.username, '學生')}
+                                            className="ml-2 text-red-500 hover:text-red-400 p-1 hover:bg-gray-800 rounded"
+                                            title="刪除學生帳號"
+                                         >
+                                            <Trash2 className="w-3 h-3" />
+                                         </button>
+                                       </>
                                      ) : (
                                        <span className="text-gray-600">未使用</span>
                                      )}
@@ -431,7 +468,6 @@ function SalesDashboard({ user }) {
       <CodeGenerator user={user} targetRole="teacher" title="建立教師驗證碼" />
       <div className="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700">
          <h3 className="text-xl font-bold mb-4 text-yellow-400">已建立的驗證碼</h3>
-         {/* 修正: 傳遞 currentUser */}
          <CodeList filterRole="teacher" currentUid={user.uid} currentUser={user} />
       </div>
     </div>
@@ -621,13 +657,11 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
     });
   };
 
-  // 修正: 刪除代碼時查詢教師名稱並發送 Discord 通知
   const deleteCode = async (code, codeId, usedByUid) => {
     if (!confirm(`確定要刪除驗證碼 ${code} 嗎？刪除後將無法使用。`)) return;
     
     let teacherName = "";
     
-    // 如果有使用者綁定 (usedByUid)，先去查該使用者的名字
     if (usedByUid) {
       try {
         const userDoc = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', USERS_COLLECTION, usedByUid));
@@ -643,11 +677,9 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
     try {
         await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION, codeId));
         
-        // 構建訊息
         const salesName = currentUser ? (currentUser.realName || currentUser.username) : "Unknown";
         let msg = `[Web後台] "${salesName}" 已將驗證碼 ${code} 刪除`;
         
-        // 如果有教師名稱，則插入
         if (teacherName) {
            msg = `[Web後台] "${salesName}" 已將 "${teacherName}" 驗證碼 ${code} 刪除`;
         }
@@ -734,7 +766,6 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
                   <Clock className="w-3 h-3" /> 延長時間
                 </button>
                 <button 
-                  // 修正: 傳遞 usedByUid 給 deleteCode
                   onClick={() => deleteCode(item.code, item.id, item.usedByUid)}
                   className="flex items-center gap-1 bg-red-600/80 hover:bg-red-600 text-xs px-3 py-2 rounded text-white w-full justify-center"
                 >
