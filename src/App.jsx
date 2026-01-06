@@ -852,19 +852,29 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
 // --- 用戶名稱顯示元件 ---
 function UserNameDisplay({ uid, placeholder }) {
   const [name, setName] = useState('...');
+
   useEffect(() => {
     if (!uid) {
         setName(placeholder);
         return;
     }
-    getDoc(doc(db, 'artifacts', appId, 'public', 'data', USERS_COLLECTION, uid)).then(snap => {
-        if (snap.exists()) {
-            const data = snap.data();
+
+    // ★★★ 修改處：改用 onSnapshot 進行實時監聽 ★★★
+    const unsub = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', USERS_COLLECTION, uid), (docSnap) => {
+        if (docSnap.exists()) {
+            const data = docSnap.data();
+            // 優先顯示 realName，如果沒有則顯示 username，再沒有就顯示 placeholder
             setName(data.realName || data.username || placeholder);
         } else {
             setName(placeholder);
         }
+    }, (error) => {
+        console.error("Fetch user name error:", error);
+        setName("讀取錯誤");
     });
+
+    // 記得在組件卸載時取消監聽
+    return () => unsub();
   }, [uid, placeholder]);
 
   return <span className="font-bold text-yellow-300">{name}</span>;
