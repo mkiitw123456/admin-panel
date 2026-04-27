@@ -3,7 +3,8 @@ import { initializeApp } from 'firebase/app';
 import { 
   getFirestore, collection, query, where, getDocs, 
   addDoc, updateDoc, doc, getDoc, setDoc, deleteDoc, 
-  serverTimestamp, Timestamp, onSnapshot, orderBy, limit
+  serverTimestamp, Timestamp, onSnapshot, orderBy, limit,
+  getCountFromServer, startAfter
 } from 'firebase/firestore';
 import { 
   User, Lock, Shield, School, Plus, RefreshCw, 
@@ -668,220 +669,103 @@ function CodeGenerator({ user, targetRole, title }) {
 // --- 通用組件: 驗證碼列表 ---
 function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, currentUser }) {
   const [codes, setCodes] = useState([]);
-  const [copiedId, setCopiedId] = useState(null);
+  const [totalCount, setTotalCount] = useState(0);
+  const [lastVisible, setLastVisible] = useState(null); // 紀錄最後一筆資料的位置
+  const [loading, setLoading] = useState(false);
+  const PAGE_SIZE = 10; // 每次讀取 10 筆
 
-useEffect(() => {
-    let q;
-    const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION);
-    
-    if (isEngineer) {
-      // 工程師：只看全系統最新建立的 100 筆
-      q = query(
-          collectionRef, 
-          orderBy('createdAt', 'desc'), 
-          limit(100)
-      );
-    } else {
-      // 業務/教師：只看自己建立的最新 100 筆
-      q = query(
-          collectionRef, 
-          where('createdByUid', '==', currentUid), 
-          orderBy('createdAt', 'desc'), 
-          limit(100)
-      );
-    }
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      // 雖然 Firebase 已經排序過了，但保險起見前端再排一次
-      list.sort((a, b) => b.createdAt?.seconds - a.createdAt?.seconds);
-      setCodes(list);
-    }, (error) => {
-      console.error("Error fetching codes:", error);
-    });
-
-    return () => unsubscribe();
+  // 1. 初始化：抓取總數與第一頁
+  useEffect(() => {
+    fetchInitialData();
   }, [currentUid, isEngineer]);
 
-  // 修改: 智慧延長時間 (啟用前加時長 / 啟用後延日期)
-  const extendTime = async (codeId, currentExpire, currentDuration) => {
-    const days = prompt('延長多少天?', '30');
-    if (!days) return;
-    const addSeconds = parseInt(days) * 24 * 3600;
-
-    if (!currentExpire) {
-      // 尚未啟用：增加 durationSeconds
-      const newDuration = (currentDuration || 0) + addSeconds;
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION, codeId), {
-        durationSeconds: newDuration
-      });
-      alert(`已增加授權時長，目前總時長: ${formatDuration(newDuration)}`);
+  const fetchInitialData = async () => {
+    setLoading(true);
+    const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION);
+    
+    // 定義基礎查詢條件
+    let baseQuery;
+    if (isEngineer) {
+      baseQuery = query(collectionRef);
     } else {
-      // 已啟用：延後 expiresAt
-      const oldDate = new Date(currentExpire.seconds * 1000);
-      oldDate.setDate(oldDate.getDate() + parseInt(days));
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION, codeId), {
-        expiresAt: Timestamp.fromDate(oldDate)
-      });
+      baseQuery = query(collectionRef, where('createdByUid', '==', currentUid));
     }
+
+    // --- 抓取總數 (這在 Firebase 很便宜) ---
+    const countSnapshot = await getCountFromServer(baseQuery);
+    setTotalCount(countSnapshot.data().count);
+
+    // --- 抓取第一頁 (10 筆) ---
+    const firstPageQuery = query(baseQuery, orderBy('createdAt', 'desc'), limit(PAGE_SIZE));
+    const snapshot = await getDocs(firstPageQuery);
+    
+    const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    setCodes(list);
+    setLastVisible(snapshot.docs[snapshot.docs.length - 1]); // 儲存最後一筆
+    setLoading(false);
   };
 
-  // 請替換 App.jsx 中的 deleteCode 函式
+  // 2. 抓取下一頁 (載入更多)
+  const fetchMoreData = async () => {
+    if (!lastVisible || loading) return;
+    setLoading(true);
 
-  const deleteCode = async (code, codeId, usedByUid) => {
-    if (!confirm(`確定要刪除驗證碼 ${code} 嗎？\n如果是已使用的代碼，對應的使用者帳號也會一併刪除！`)) return;
-    
-    let teacherName = "";
-    
-    // 1. 先取得名稱 (為了發 Discord 通知)
-    if (usedByUid) {
-      try {
-        const userDoc = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', USERS_COLLECTION, usedByUid));
-        if (userDoc.exists()) {
-          const userData = userDoc.data();
-          teacherName = userData.realName || userData.username;
-        }
-      } catch (e) {
-        console.error("Error fetching user name for delete message", e);
-      }
+    const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION);
+    let baseQuery;
+    if (isEngineer) {
+      baseQuery = query(collectionRef);
+    } else {
+      baseQuery = query(collectionRef, where('createdByUid', '==', currentUid));
     }
 
-    try {
-        // 2. 刪除驗證碼文件
-        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION, codeId));
-        
-        // ★★★ 新增：連同使用者帳號一起刪除 ★★★
-        if (usedByUid) {
-            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', USERS_COLLECTION, usedByUid));
-            console.log(`Associated user ${usedByUid} deleted.`);
-        }
+    // 使用 startAfter 從上次結束的位置繼續往後抓
+    const nextQuery = query(
+      baseQuery, 
+      orderBy('createdAt', 'desc'), 
+      startAfter(lastVisible), 
+      limit(PAGE_SIZE)
+    );
 
-        // 3. 發送通知
-        const salesName = currentUser ? (currentUser.realName || currentUser.username) : "Unknown";
-        let msg = `[Web後台] "${salesName}" 已將驗證碼 ${code} 刪除`;
-        
-        if (teacherName) {
-           msg = `[Web後台] "${salesName}" 已將 "${teacherName}" 驗證碼 ${code} 及其關聯帳號刪除`;
-        }
-
-        sendToDiscord(msg);
-    } catch(e) {
-        alert("刪除失敗: " + e.message);
-    }
-  };
-
-  const handleCopy = (text, id) => {
-    copyToClipboard(text);
-    setCopiedId(id);
-    setTimeout(() => {
-      setCopiedId(null);
-    }, 2000);
+    const snapshot = await getDocs(nextQuery);
+    const newList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    
+    setCodes([...codes, ...newList]); // 把新抓的 10 筆接在舊資料後面
+    setLastVisible(snapshot.docs[snapshot.docs.length - 1]);
+    setLoading(false);
   };
 
   return (
-    <div className="grid grid-cols-1 gap-4">
-      {codes.map(item => {
-        // 修改: 判斷過期邏輯 (未啟用不算過期)
-        const isExpired = item.expiresAt ? (item.expiresAt.seconds * 1000 < Date.now()) : false;
-        const isActive = item.isUsed && item.expiresAt;
-        
-        let statusColor = 'bg-gray-600';
-        let statusText = '尚未啟用';
-        let borderColor = 'border-gray-500';
+    <div className="space-y-4">
+      {/* 顯示總數資訊 */}
+      <div className="flex justify-between items-center text-sm text-gray-400 px-2">
+        <span>目前顯示: {codes.length} 筆</span>
+        <span className="bg-gray-700 px-3 py-1 rounded-full text-blue-400 font-bold">
+          資料總計: {totalCount} 筆
+        </span>
+      </div>
 
-        if (isExpired) {
-            statusColor = 'bg-red-600';
-            statusText = '已到期';
-            borderColor = 'border-red-500';
-        } else if (isActive) {
-            statusColor = 'bg-green-600';
-            statusText = '使用中';
-            borderColor = 'border-green-500';
-        }
+      <div className="grid grid-cols-1 gap-4">
+        {codes.map(item => (
+          <CodeItem key={item.id} item={item} currentUser={currentUser} showStudentDetail={showStudentDetail} />
+        ))}
+      </div>
 
-        // 相容舊資料 (若沒有 durationSeconds，預設用 days)
-        const displayDuration = item.durationSeconds 
-            ? formatDuration(item.durationSeconds) 
-            : `${item.durationDays || 30}天`;
+      {/* 載入更多按鈕 */}
+      {codes.length < totalCount && (
+        <div className="text-center pt-4">
+          <button 
+            onClick={fetchMoreData}
+            disabled={loading}
+            className="px-6 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-all disabled:opacity-50"
+          >
+            {loading ? '載入中...' : `載入更多 (還有 ${totalCount - codes.length} 筆)`}
+          </button>
+        </div>
+      )}
 
-        return (
-          <div key={item.id} className={`relative bg-gray-800 border-2 ${borderColor} rounded-lg p-4 transition-all hover:shadow-lg`}>
-            <div className="flex flex-col md:flex-row justify-between gap-4">
-              <div className="space-y-2 flex-1">
-                <div className="flex items-center gap-3">
-                  <span className="text-2xl font-mono font-bold text-white tracking-widest">{item.code}</span>
-                  
-                  <button 
-                    onClick={() => handleCopy(item.code, item.id)} 
-                    className="flex items-center gap-1 p-1 hover:bg-gray-700 rounded text-gray-400 transition-colors"
-                    title="複製驗證碼"
-                  >
-                    {copiedId === item.id ? (
-                      <>
-                        <Check className="w-4 h-4 text-green-500" />
-                        <span className="text-xs text-green-500 font-bold">已複製</span>
-                      </>
-                    ) : (
-                      <Copy className="w-4 h-4" />
-                    )}
-                  </button>
-
-                  <span className={`text-xs px-2 py-0.5 rounded ${statusColor}`}>
-                    {statusText}
-                  </span>
-                </div>
-                
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm text-gray-400">
-                  <div>
-                    <span className="block text-xs text-gray-500">綁定 MAC</span>
-                    <span className="block break-all">{item.boundMac || '尚未綁定'}</span>
-                  </div>
-                  <div>
-                    <span className="block text-xs text-gray-500">建立日期</span>
-                    {formatDate(item.createdAt)}
-                  </div>
-                  <div>
-                    <span className="block text-xs text-gray-500">到期日期</span>
-                    {/* 修改: 若未啟用，顯示總時長 */}
-                    {item.expiresAt ? (
-                        <span className={isExpired ? 'text-red-400 font-bold' : ''}>{formatDate(item.expiresAt)}</span>
-                    ) : (
-                        <span className="text-gray-500 italic">未啟用 (時效: {displayDuration})</span>
-                    )}
-                  </div>
-
-                  {!showStudentDetail && item.type === 'teacher' && item.isUsed && (
-                    <div className="col-span-2 md:col-span-1">
-                       <span className="block text-xs text-gray-500">使用教師</span>
-                       <UserNameDisplay uid={item.usedByUid} placeholder="尚未輸入" />
-                    </div>
-                  )}
-
-                  {showStudentDetail && item.isUsed && (
-                    <StudentDetailDisplay uid={item.usedByUid} />
-                  )}
-                </div>
-              </div>
-
-              <div className="flex flex-col justify-center gap-2 border-l border-gray-700 pl-4">
-                <button 
-                  onClick={() => extendTime(item.id, item.expiresAt, item.durationSeconds)}
-                  className="flex items-center gap-1 bg-blue-600/80 hover:bg-blue-600 text-xs px-3 py-2 rounded text-white w-full justify-center"
-                >
-                  <Clock className="w-3 h-3" /> 延長時間
-                </button>
-                <button 
-                  onClick={() => deleteCode(item.code, item.id, item.usedByUid)}
-                  className="flex items-center gap-1 bg-red-600/80 hover:bg-red-600 text-xs px-3 py-2 rounded text-white w-full justify-center"
-                >
-                  <Trash2 className="w-3 h-3" /> 刪除代碼
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })}
-      {codes.length === 0 && <p className="text-gray-500 text-center py-8">暫無資料</p>}
+      {codes.length === 0 && !loading && (
+        <p className="text-gray-500 text-center py-8">暫無資料</p>
+      )}
     </div>
   );
 }
