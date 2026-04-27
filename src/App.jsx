@@ -3,7 +3,7 @@ import { initializeApp } from 'firebase/app';
 import { 
   getFirestore, collection, query, where, getDocs, 
   addDoc, updateDoc, doc, getDoc, setDoc, deleteDoc, 
-  serverTimestamp, Timestamp, onSnapshot 
+  serverTimestamp, Timestamp, onSnapshot, orderBy, limit
 } from 'firebase/firestore';
 import { 
   User, Lock, Shield, School, Plus, RefreshCw, 
@@ -344,15 +344,29 @@ function EngineerHierarchy() {
   const [users, setUsers] = useState([]);
   const [codes, setCodes] = useState([]);
 
-  useEffect(() => {
-    const unsubUsers = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', USERS_COLLECTION), (snapshot) => {
+useEffect(() => {
+    // 限制最多只抓取最新註冊的 100 個使用者 (避免資料無限膨脹)
+    const usersQuery = query(
+      collection(db, 'artifacts', appId, 'public', 'data', USERS_COLLECTION),
+      orderBy('createdAt', 'desc'),
+      limit(100)
+    );
+    const unsubUsers = onSnapshot(usersQuery, (snapshot) => {
       const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setUsers(list);
     });
-    const unsubCodes = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION), (snapshot) => {
+
+    // 限制最多只抓取最新產生的 300 筆驗證碼 (供樹狀圖對應用)
+    const codesQuery = query(
+      collection(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION),
+      orderBy('createdAt', 'desc'),
+      limit(300)
+    );
+    const unsubCodes = onSnapshot(codesQuery, (snapshot) => {
       const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setCodes(list);
     });
+
     return () => {
       unsubUsers();
       unsubCodes();
@@ -656,18 +670,30 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
   const [codes, setCodes] = useState([]);
   const [copiedId, setCopiedId] = useState(null);
 
-  useEffect(() => {
+useEffect(() => {
     let q;
     const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION);
     
     if (isEngineer) {
-      q = query(collectionRef);
+      // 工程師：只看全系統最新建立的 100 筆
+      q = query(
+          collectionRef, 
+          orderBy('createdAt', 'desc'), 
+          limit(100)
+      );
     } else {
-      q = query(collectionRef, where('createdByUid', '==', currentUid));
+      // 業務/教師：只看自己建立的最新 100 筆
+      q = query(
+          collectionRef, 
+          where('createdByUid', '==', currentUid), 
+          orderBy('createdAt', 'desc'), 
+          limit(100)
+      );
     }
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // 雖然 Firebase 已經排序過了，但保險起見前端再排一次
       list.sort((a, b) => b.createdAt?.seconds - a.createdAt?.seconds);
       setCodes(list);
     }, (error) => {
@@ -700,11 +726,14 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
     }
   };
 
+  // 請替換 App.jsx 中的 deleteCode 函式
+
   const deleteCode = async (code, codeId, usedByUid) => {
-    if (!confirm(`確定要刪除驗證碼 ${code} 嗎？刪除後將無法使用。`)) return;
+    if (!confirm(`確定要刪除驗證碼 ${code} 嗎？\n如果是已使用的代碼，對應的使用者帳號也會一併刪除！`)) return;
     
     let teacherName = "";
     
+    // 1. 先取得名稱 (為了發 Discord 通知)
     if (usedByUid) {
       try {
         const userDoc = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', USERS_COLLECTION, usedByUid));
@@ -718,13 +747,21 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
     }
 
     try {
+        // 2. 刪除驗證碼文件
         await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION, codeId));
         
+        // ★★★ 新增：連同使用者帳號一起刪除 ★★★
+        if (usedByUid) {
+            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', USERS_COLLECTION, usedByUid));
+            console.log(`Associated user ${usedByUid} deleted.`);
+        }
+
+        // 3. 發送通知
         const salesName = currentUser ? (currentUser.realName || currentUser.username) : "Unknown";
         let msg = `[Web後台] "${salesName}" 已將驗證碼 ${code} 刪除`;
         
         if (teacherName) {
-           msg = `[Web後台] "${salesName}" 已將 "${teacherName}" 驗證碼 ${code} 刪除`;
+           msg = `[Web後台] "${salesName}" 已將 "${teacherName}" 驗證碼 ${code} 及其關聯帳號刪除`;
         }
 
         sendToDiscord(msg);
