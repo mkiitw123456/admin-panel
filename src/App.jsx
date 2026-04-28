@@ -667,6 +667,7 @@ function CodeGenerator({ user, targetRole, title }) {
 }
 
 // --- 通用組件: 驗證碼列表 ---
+// --- 通用組件: 驗證碼列表 ---
 function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, currentUser }) {
   const [codes, setCodes] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -692,7 +693,7 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
         const countSnapshot = await getCountFromServer(baseQuery);
         setTotalCount(countSnapshot.data().count);
 
-        // 2. 抓取第一頁 (注意這裡必須建立索引)
+        // 2. 抓取第一頁
         const firstPageQuery = query(baseQuery, orderBy('createdAt', 'desc'), limit(PAGE_SIZE));
         const snapshot = await getDocs(firstPageQuery);
         
@@ -751,8 +752,12 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
 
       <div className="grid grid-cols-1 gap-4">
         {codes.map(item => (
-          // 這裡直接內嵌原本的 UI 邏輯
-          <CodeCard key={item.id} item={item} currentUser={currentUser} showStudentDetail={showStudentDetail} />
+          <CodeItem 
+            key={item.id} 
+            item={item} 
+            currentUser={currentUser} 
+            showStudentDetail={showStudentDetail} 
+          />
         ))}
       </div>
 
@@ -764,7 +769,7 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
             className="group relative px-8 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition-all shadow-lg active:scale-95 disabled:opacity-50"
           >
             {loading ? (
-              <span className="flex items-center gap-2">
+              <span className="flex items-center gap-2 justify-center">
                 <RefreshCw className="w-4 h-4 animate-spin" /> 正在讀取...
               </span>
             ) : (
@@ -776,6 +781,128 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
 
       {codes.length === 0 && !loading && (
         <p className="text-gray-500 text-center py-8">暫無任何序號資料</p>
+      )}
+    </div>
+  );
+}
+
+// --- 完整的單筆序號卡片元件 ---
+function CodeItem({ item, currentUser, showStudentDetail }) {
+  const [copied, setCopied] = useState(false);
+
+  // 複製序號
+  const handleCopy = () => {
+    copyToClipboard(item.code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  // 刪除序號
+  const handleDelete = async () => {
+    if (!confirm(`確定要刪除驗證碼 ${item.code} 嗎？`)) return;
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION, item.id));
+      sendToDiscord(`[Web後台] ${currentUser?.realName || '管理員'} 刪除了驗證碼: ${item.code}`);
+      alert('刪除成功 (請重整網頁更新列表)');
+    } catch (e) {
+      alert('刪除失敗: ' + e.message);
+    }
+  };
+
+  // 重置序號 (清空綁定)
+  const handleReset = async () => {
+    if (!confirm(`確定要重置驗證碼 ${item.code} 嗎？\n(這會清除綁定的裝置與使用者，讓序號可以重新使用)`)) return;
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION, item.id), {
+        isUsed: false,
+        boundMac: '',
+        usedByUid: '',
+        expiresAt: null
+      });
+      sendToDiscord(`[Web後台] ${currentUser?.realName || '管理員'} 重置了驗證碼: ${item.code}`);
+      alert('重置成功 (請重整網頁更新列表)');
+    } catch (e) {
+      alert('重置失敗: ' + e.message);
+    }
+  };
+
+  const statusColor = item.isUsed ? 'text-red-400' : 'text-green-400';
+  const statusText = item.isUsed ? '已啟用' : '未使用';
+
+  return (
+    <div className="bg-gray-800 border-2 border-gray-700 rounded-lg p-4 hover:border-gray-600 transition-colors shadow-md">
+      <div className="flex flex-col md:flex-row justify-between md:items-center gap-4 border-b border-gray-700 pb-4 mb-4">
+        <div>
+          <div className="flex items-center gap-3">
+            <span className="text-2xl font-mono text-white font-bold tracking-widest">{item.code}</span>
+            <button onClick={handleCopy} className="p-2 bg-gray-700 hover:bg-gray-600 rounded-full transition" title="複製驗證碼">
+              {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4 text-blue-400" />}
+            </button>
+          </div>
+          <div className="text-sm text-gray-400 mt-1 flex items-center gap-2">
+            建立於: {formatDate(item.createdAt)}
+            <span className="px-2 py-0.5 rounded text-xs bg-gray-700 text-gray-300">
+              {item.type === 'teacher' ? '教師用' : '學生用'}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          {item.isUsed && (
+            <button onClick={handleReset} className="px-3 py-1 bg-yellow-600 hover:bg-yellow-500 text-white text-sm rounded flex items-center gap-1 transition">
+              <RefreshCw className="w-4 h-4" /> 重置
+            </button>
+          )}
+          <button onClick={handleDelete} className="px-3 py-1 bg-red-600 hover:bg-red-500 text-white text-sm rounded flex items-center gap-1 transition">
+            <Trash2 className="w-4 h-4" /> 刪除
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+        <div className="space-y-2">
+          <div className="flex justify-between border-b border-gray-700/50 pb-1">
+            <span className="text-gray-400">狀態:</span>
+            <span className={`font-bold flex items-center gap-1 ${statusColor}`}>
+              {item.isUsed ? <CheckCircle className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
+              {statusText}
+            </span>
+          </div>
+          <div className="flex justify-between border-b border-gray-700/50 pb-1">
+            <span className="text-gray-400">總時效:</span>
+            <span className="text-white">{formatDuration(item.durationSeconds)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">到期時間:</span>
+            <span className={item.expiresAt ? 'text-white font-mono' : 'text-gray-500'}>
+              {formatDate(item.expiresAt)}
+            </span>
+          </div>
+        </div>
+
+        <div className="space-y-2 border-t md:border-t-0 md:border-l border-gray-700 pt-3 md:pt-0 md:pl-4">
+          <div className="flex justify-between border-b border-gray-700/50 pb-1">
+            <span className="text-gray-400">綁定裝置 (MAC):</span>
+            <span className="text-white font-mono text-xs">{item.boundMac || '無'}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-gray-400">使用/綁定者:</span>
+            <span>
+              {item.usedByUid ? (
+                <UserNameDisplay uid={item.usedByUid} placeholder="未知使用者" />
+              ) : (
+                <span className="text-gray-500">無</span>
+              )}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* 學生用序號的詳細編輯資料區塊 */}
+      {showStudentDetail && item.usedByUid && item.type === 'student' && (
+        <div className="mt-4 pt-4 border-t border-gray-700 bg-gray-900/30 -mx-4 -mb-4 p-4 rounded-b-lg">
+          <StudentDetailDisplay uid={item.usedByUid} />
+        </div>
       )}
     </div>
   );
