@@ -670,101 +670,112 @@ function CodeGenerator({ user, targetRole, title }) {
 function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, currentUser }) {
   const [codes, setCodes] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
-  const [lastVisible, setLastVisible] = useState(null); // 紀錄最後一筆資料的位置
+  const [lastVisible, setLastVisible] = useState(null); 
   const [loading, setLoading] = useState(false);
-  const PAGE_SIZE = 10; // 每次讀取 10 筆
+  const PAGE_SIZE = 10; 
 
-  // 1. 初始化：抓取總數與第一頁
+  // 初始化資料
   useEffect(() => {
+    const fetchInitialData = async () => {
+      setLoading(true);
+      try {
+        const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION);
+        let baseQuery;
+        
+        if (isEngineer) {
+          baseQuery = query(collectionRef);
+        } else {
+          baseQuery = query(collectionRef, where('createdByUid', '==', currentUid));
+        }
+
+        // 1. 抓取總數
+        const countSnapshot = await getCountFromServer(baseQuery);
+        setTotalCount(countSnapshot.data().count);
+
+        // 2. 抓取第一頁 (注意這裡必須建立索引)
+        const firstPageQuery = query(baseQuery, orderBy('createdAt', 'desc'), limit(PAGE_SIZE));
+        const snapshot = await getDocs(firstPageQuery);
+        
+        const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setCodes(list);
+        setLastVisible(snapshot.docs[snapshot.docs.length - 1]);
+      } catch (err) {
+        console.error("分頁載入失敗:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
     fetchInitialData();
   }, [currentUid, isEngineer]);
 
-  const fetchInitialData = async () => {
-    setLoading(true);
-    const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION);
-    
-    // 定義基礎查詢條件
-    let baseQuery;
-    if (isEngineer) {
-      baseQuery = query(collectionRef);
-    } else {
-      baseQuery = query(collectionRef, where('createdByUid', '==', currentUid));
-    }
-
-    // --- 抓取總數 (這在 Firebase 很便宜) ---
-    const countSnapshot = await getCountFromServer(baseQuery);
-    setTotalCount(countSnapshot.data().count);
-
-    // --- 抓取第一頁 (10 筆) ---
-    const firstPageQuery = query(baseQuery, orderBy('createdAt', 'desc'), limit(PAGE_SIZE));
-    const snapshot = await getDocs(firstPageQuery);
-    
-    const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    setCodes(list);
-    setLastVisible(snapshot.docs[snapshot.docs.length - 1]); // 儲存最後一筆
-    setLoading(false);
-  };
-
-  // 2. 抓取下一頁 (載入更多)
+  // 載入更多
   const fetchMoreData = async () => {
     if (!lastVisible || loading) return;
     setLoading(true);
+    try {
+      const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION);
+      let baseQuery = isEngineer 
+        ? query(collectionRef) 
+        : query(collectionRef, where('createdByUid', '==', currentUid));
 
-    const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION);
-    let baseQuery;
-    if (isEngineer) {
-      baseQuery = query(collectionRef);
-    } else {
-      baseQuery = query(collectionRef, where('createdByUid', '==', currentUid));
+      const nextQuery = query(
+        baseQuery, 
+        orderBy('createdAt', 'desc'), 
+        startAfter(lastVisible), 
+        limit(PAGE_SIZE)
+      );
+
+      const snapshot = await getDocs(nextQuery);
+      const newList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      
+      setCodes(prev => [...prev, ...newList]);
+      setLastVisible(snapshot.docs[snapshot.docs.length - 1]);
+    } catch (err) {
+      console.error("載入更多失敗:", err);
+    } finally {
+      setLoading(false);
     }
-
-    // 使用 startAfter 從上次結束的位置繼續往後抓
-    const nextQuery = query(
-      baseQuery, 
-      orderBy('createdAt', 'desc'), 
-      startAfter(lastVisible), 
-      limit(PAGE_SIZE)
-    );
-
-    const snapshot = await getDocs(nextQuery);
-    const newList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    
-    setCodes([...codes, ...newList]); // 把新抓的 10 筆接在舊資料後面
-    setLastVisible(snapshot.docs[snapshot.docs.length - 1]);
-    setLoading(false);
   };
 
   return (
     <div className="space-y-4">
-      {/* 顯示總數資訊 */}
-      <div className="flex justify-between items-center text-sm text-gray-400 px-2">
-        <span>目前顯示: {codes.length} 筆</span>
-        <span className="bg-gray-700 px-3 py-1 rounded-full text-blue-400 font-bold">
-          資料總計: {totalCount} 筆
+      {/* 總數資訊欄 */}
+      <div className="flex justify-between items-center text-sm text-gray-400 px-2 bg-gray-900/30 p-2 rounded">
+        <span>目前顯示: <span className="text-white font-mono">{codes.length}</span> / {totalCount} 筆</span>
+        <span className="text-blue-400 font-bold flex items-center gap-2">
+          <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+          資料庫總計: {totalCount} 筆
         </span>
       </div>
 
       <div className="grid grid-cols-1 gap-4">
         {codes.map(item => (
-          <CodeItem key={item.id} item={item} currentUser={currentUser} showStudentDetail={showStudentDetail} />
+          // 這裡直接內嵌原本的 UI 邏輯
+          <CodeCard key={item.id} item={item} currentUser={currentUser} showStudentDetail={showStudentDetail} />
         ))}
       </div>
 
-      {/* 載入更多按鈕 */}
       {codes.length < totalCount && (
-        <div className="text-center pt-4">
+        <div className="text-center pt-6">
           <button 
             onClick={fetchMoreData}
             disabled={loading}
-            className="px-6 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-all disabled:opacity-50"
+            className="group relative px-8 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition-all shadow-lg active:scale-95 disabled:opacity-50"
           >
-            {loading ? '載入中...' : `載入更多 (還有 ${totalCount - codes.length} 筆)`}
+            {loading ? (
+              <span className="flex items-center gap-2">
+                <RefreshCw className="w-4 h-4 animate-spin" /> 正在讀取...
+              </span>
+            ) : (
+              `載入更多序號 (還有 ${totalCount - codes.length} 筆)`
+            )}
           </button>
         </div>
       )}
 
       {codes.length === 0 && !loading && (
-        <p className="text-gray-500 text-center py-8">暫無資料</p>
+        <p className="text-gray-500 text-center py-8">暫無任何序號資料</p>
       )}
     </div>
   );
