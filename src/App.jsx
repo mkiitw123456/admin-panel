@@ -591,8 +591,8 @@ function TeacherDashboard({ user, setUser }) {
 }
 
 // --- 通用組件: 驗證碼生成器 ---
+// --- 通用組件: 驗證碼生成器 ---
 function CodeGenerator({ user, targetRole, title }) {
-  // 修改: 拆分為 天/時/分
   const [days, setDays] = useState(30); 
   const [hours, setHours] = useState(0); 
   const [minutes, setMinutes] = useState(0); 
@@ -602,8 +602,6 @@ function CodeGenerator({ user, targetRole, title }) {
     setLoading(true);
     try {
       const code = Math.random().toString(36).substring(2, 10).toUpperCase();
-      
-      // 計算總秒數
       const totalSeconds = (parseInt(days) * 24 * 3600) + (parseInt(hours) * 3600) + (parseInt(minutes) * 60);
 
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION), {
@@ -611,7 +609,6 @@ function CodeGenerator({ user, targetRole, title }) {
         type: targetRole,
         createdByUid: user.uid,
         createdAt: serverTimestamp(),
-        // 修改: 預設為 null，代表尚未啟用 (Start on use)
         expiresAt: null, 
         durationSeconds: totalSeconds,
         isUsed: false,
@@ -620,6 +617,10 @@ function CodeGenerator({ user, targetRole, title }) {
       });
       
       sendToDiscord(`[Web後台] ${user.role === 'teacher' ? '教師' : '業務'} ${user.realName || user.username} 建立了 ${targetRole === 'student' ? '學生' : '教師'} 驗證碼: ${code} (時效: ${formatDuration(totalSeconds)})`);
+      
+      // ★ 核心魔法：大喊一聲通知列表更新
+      window.dispatchEvent(new Event('refreshCodeList'));
+      
       setLoading(false);
     } catch (err) {
       alert('生成錯誤: ' + err.message);
@@ -667,7 +668,6 @@ function CodeGenerator({ user, targetRole, title }) {
 }
 
 // --- 通用組件: 驗證碼列表 ---
-// --- 通用組件: 驗證碼列表 ---
 function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, currentUser }) {
   const [codes, setCodes] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -675,25 +675,18 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
   const [loading, setLoading] = useState(false);
   const PAGE_SIZE = 10; 
 
-  // 初始化資料
   useEffect(() => {
     const fetchInitialData = async () => {
       setLoading(true);
       try {
         const collectionRef = collection(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION);
-        let baseQuery;
-        
-        if (isEngineer) {
-          baseQuery = query(collectionRef);
-        } else {
-          baseQuery = query(collectionRef, where('createdByUid', '==', currentUid));
-        }
+        let baseQuery = isEngineer 
+          ? query(collectionRef) 
+          : query(collectionRef, where('createdByUid', '==', currentUid));
 
-        // 1. 抓取總數
         const countSnapshot = await getCountFromServer(baseQuery);
         setTotalCount(countSnapshot.data().count);
 
-        // 2. 抓取第一頁
         const firstPageQuery = query(baseQuery, orderBy('createdAt', 'desc'), limit(PAGE_SIZE));
         const snapshot = await getDocs(firstPageQuery);
         
@@ -708,9 +701,13 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
     };
 
     fetchInitialData();
+
+    // ★ 核心魔法：豎起耳朵聽，一收到更新通知就立刻重抓第一頁
+    window.addEventListener('refreshCodeList', fetchInitialData);
+    return () => window.removeEventListener('refreshCodeList', fetchInitialData);
+    
   }, [currentUid, isEngineer]);
 
-  // 載入更多
   const fetchMoreData = async () => {
     if (!lastVisible || loading) return;
     setLoading(true);
@@ -720,13 +717,7 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
         ? query(collectionRef) 
         : query(collectionRef, where('createdByUid', '==', currentUid));
 
-      const nextQuery = query(
-        baseQuery, 
-        orderBy('createdAt', 'desc'), 
-        startAfter(lastVisible), 
-        limit(PAGE_SIZE)
-      );
-
+      const nextQuery = query(baseQuery, orderBy('createdAt', 'desc'), startAfter(lastVisible), limit(PAGE_SIZE));
       const snapshot = await getDocs(nextQuery);
       const newList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       
@@ -741,7 +732,6 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
 
   return (
     <div className="space-y-4">
-      {/* 總數資訊欄 */}
       <div className="flex justify-between items-center text-sm text-gray-400 px-2 bg-gray-900/30 p-2 rounded">
         <span>目前顯示: <span className="text-white font-mono">{codes.length}</span> / {totalCount} 筆</span>
         <span className="text-blue-400 font-bold flex items-center gap-2">
@@ -752,29 +742,14 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
 
       <div className="grid grid-cols-1 gap-4">
         {codes.map(item => (
-          <CodeItem 
-            key={item.id} 
-            item={item} 
-            currentUser={currentUser} 
-            showStudentDetail={showStudentDetail} 
-          />
+          <CodeItem key={item.id} item={item} currentUser={currentUser} showStudentDetail={showStudentDetail} />
         ))}
       </div>
 
       {codes.length < totalCount && (
         <div className="text-center pt-6">
-          <button 
-            onClick={fetchMoreData}
-            disabled={loading}
-            className="group relative px-8 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition-all shadow-lg active:scale-95 disabled:opacity-50"
-          >
-            {loading ? (
-              <span className="flex items-center gap-2 justify-center">
-                <RefreshCw className="w-4 h-4 animate-spin" /> 正在讀取...
-              </span>
-            ) : (
-              `載入更多序號 (還有 ${totalCount - codes.length} 筆)`
-            )}
+          <button onClick={fetchMoreData} disabled={loading} className="group relative px-8 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition-all shadow-lg active:scale-95 disabled:opacity-50">
+            {loading ? <span className="flex items-center justify-center gap-2"><RefreshCw className="w-4 h-4 animate-spin" /> 正在讀取...</span> : `載入更多序號 (還有 ${totalCount - codes.length} 筆)`}
           </button>
         </div>
       )}
@@ -790,26 +765,24 @@ function CodeList({ filterRole, currentUid, isEngineer, showStudentDetail, curre
 function CodeItem({ item, currentUser, showStudentDetail }) {
   const [copied, setCopied] = useState(false);
 
-  // 複製序號
   const handleCopy = () => {
     copyToClipboard(item.code);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // 刪除序號
   const handleDelete = async () => {
     if (!confirm(`確定要刪除驗證碼 ${item.code} 嗎？`)) return;
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', CODES_COLLECTION, item.id));
       sendToDiscord(`[Web後台] ${currentUser?.realName || '管理員'} 刪除了驗證碼: ${item.code}`);
-      alert('刪除成功 (請重整網頁更新列表)');
+      // ★ 刪除後自動重整列表
+      window.dispatchEvent(new Event('refreshCodeList'));
     } catch (e) {
       alert('刪除失敗: ' + e.message);
     }
   };
 
-  // 重置序號 (清空綁定)
   const handleReset = async () => {
     if (!confirm(`確定要重置驗證碼 ${item.code} 嗎？\n(這會清除綁定的裝置與使用者，讓序號可以重新使用)`)) return;
     try {
@@ -820,7 +793,8 @@ function CodeItem({ item, currentUser, showStudentDetail }) {
         expiresAt: null
       });
       sendToDiscord(`[Web後台] ${currentUser?.realName || '管理員'} 重置了驗證碼: ${item.code}`);
-      alert('重置成功 (請重整網頁更新列表)');
+      // ★ 重置後自動重整列表
+      window.dispatchEvent(new Event('refreshCodeList'));
     } catch (e) {
       alert('重置失敗: ' + e.message);
     }
@@ -898,7 +872,6 @@ function CodeItem({ item, currentUser, showStudentDetail }) {
         </div>
       </div>
 
-      {/* 學生用序號的詳細編輯資料區塊 */}
       {showStudentDetail && item.usedByUid && item.type === 'student' && (
         <div className="mt-4 pt-4 border-t border-gray-700 bg-gray-900/30 -mx-4 -mb-4 p-4 rounded-b-lg">
           <StudentDetailDisplay uid={item.usedByUid} />
